@@ -1,43 +1,43 @@
 import { useState, useRef, useEffect } from "react";
-import { Send, ArrowLeft } from "lucide-react";
+import { Send, ArrowLeft, Loader2 } from "lucide-react";
+import { supabase } from "@/integrations/supabase/client";
+import { toast } from "sonner";
 import MessageBubble from "./MessageBubble";
 import ResultCard from "./ResultCard";
+
+interface Diagnosis {
+  disease: string;
+  confidence: number;
+  severity: "low" | "moderate" | "high";
+  recommendations: string[];
+  symptoms: string[];
+}
 
 interface Message {
   id: number;
   role: "user" | "ai";
   text: string;
   isResult?: boolean;
+  diagnosis?: Diagnosis;
 }
 
 interface ChatInterfaceProps {
   t: Record<string, string>;
+  language: string;
   onBack: () => void;
   onEmergency: () => void;
 }
 
 const quickSymptoms = ["fever", "headache", "cough"];
 
-const mockDiagnosis = {
-  disease: "Viral Fever",
-  confidence: 87,
-  severity: "moderate" as const,
-  recommendations: [
-    "Rest and stay hydrated",
-    "Take paracetamol for fever (as per dosage)",
-    "Monitor temperature every 4 hours",
-    "Consult a doctor if fever persists beyond 3 days",
-  ],
-  symptoms: ["Fever", "Fatigue", "Body ache"],
-};
-
-const ChatInterface = ({ t, onBack, onEmergency }: ChatInterfaceProps) => {
+const ChatInterface = ({ t, language, onBack, onEmergency }: ChatInterfaceProps) => {
   const [messages, setMessages] = useState<Message[]>([
     { id: 1, role: "ai", text: "Hello! I'm your AI Health Assistant. Please describe your symptoms and I'll help assess your condition." },
   ]);
   const [input, setInput] = useState("");
   const [isTyping, setIsTyping] = useState(false);
   const [showResult, setShowResult] = useState(false);
+  const [currentDiagnosis, setCurrentDiagnosis] = useState<Diagnosis | null>(null);
   const [step, setStep] = useState(1);
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -45,9 +45,9 @@ const ChatInterface = ({ t, onBack, onEmergency }: ChatInterfaceProps) => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, isTyping]);
 
-  const handleSend = (text?: string) => {
+  const handleSend = async (text?: string) => {
     const msg = text || input.trim();
-    if (!msg) return;
+    if (!msg || isTyping) return;
 
     const userMsg: Message = { id: Date.now(), role: "user", text: msg };
     setMessages((prev) => [...prev, userMsg]);
@@ -55,18 +55,38 @@ const ChatInterface = ({ t, onBack, onEmergency }: ChatInterfaceProps) => {
     setIsTyping(true);
     setStep(2);
 
-    setTimeout(() => {
-      setIsTyping(false);
+    try {
+      const { data, error } = await supabase.functions.invoke("analyze-symptoms", {
+        body: { symptoms: msg, language },
+      });
+
+      if (error) throw error;
+
+      const diagnosis: Diagnosis = data;
+      setCurrentDiagnosis(diagnosis);
       setStep(3);
+
       const aiMsg: Message = {
         id: Date.now() + 1,
         role: "ai",
         text: "Based on your symptoms, here is my assessment:",
         isResult: true,
+        diagnosis,
       };
       setMessages((prev) => [...prev, aiMsg]);
       setShowResult(true);
-    }, 2500);
+    } catch (err: any) {
+      toast.error(err.message || "Failed to analyze symptoms. Please try again.");
+      const errorMsg: Message = {
+        id: Date.now() + 1,
+        role: "ai",
+        text: "I'm sorry, I encountered an error analyzing your symptoms. Please try again.",
+      };
+      setMessages((prev) => [...prev, errorMsg]);
+      setStep(1);
+    } finally {
+      setIsTyping(false);
+    }
   };
 
   return (
@@ -77,7 +97,6 @@ const ChatInterface = ({ t, onBack, onEmergency }: ChatInterfaceProps) => {
           <ArrowLeft className="h-4 w-4" />
           {t.title}
         </button>
-        {/* Steps */}
         <div className="flex items-center gap-2 text-xs font-medium">
           {[1, 2, 3].map((s) => (
             <div key={s} className="flex items-center gap-1">
@@ -104,20 +123,16 @@ const ChatInterface = ({ t, onBack, onEmergency }: ChatInterfaceProps) => {
           {messages.map((msg) => (
             <div key={msg.id}>
               <MessageBubble role={msg.role} text={msg.text} />
-              {msg.isResult && showResult && (
+              {msg.isResult && showResult && msg.diagnosis && (
                 <div className="mt-3">
-                  <ResultCard t={t} diagnosis={mockDiagnosis} />
+                  <ResultCard t={t} diagnosis={msg.diagnosis} />
                 </div>
               )}
             </div>
           ))}
           {isTyping && (
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
-              <div className="flex gap-1">
-                <span className="typing-dot h-2 w-2 rounded-full bg-primary" />
-                <span className="typing-dot h-2 w-2 rounded-full bg-primary" />
-                <span className="typing-dot h-2 w-2 rounded-full bg-primary" />
-              </div>
+              <Loader2 className="h-4 w-4 animate-spin text-primary" />
               {t.analyzing}
             </div>
           )}
@@ -133,14 +148,16 @@ const ChatInterface = ({ t, onBack, onEmergency }: ChatInterfaceProps) => {
               <button
                 key={sym}
                 onClick={() => handleSend(t[sym])}
-                className="shrink-0 rounded-full border border-border bg-card px-4 py-2 text-sm font-medium text-foreground transition-colors hover:border-primary hover:text-primary"
+                disabled={isTyping}
+                className="shrink-0 rounded-full border border-border bg-card px-4 py-2 text-sm font-medium text-foreground transition-colors hover:border-primary hover:text-primary disabled:opacity-50"
               >
                 {t[sym]}
               </button>
             ))}
             <button
               onClick={() => handleSend("I have fever, fatigue, and body ache for 2 days")}
-              className="shrink-0 rounded-full border border-primary/30 bg-primary/5 px-4 py-2 text-sm font-semibold text-primary transition-colors hover:bg-primary/10"
+              disabled={isTyping}
+              className="shrink-0 rounded-full border border-primary/30 bg-primary/5 px-4 py-2 text-sm font-semibold text-primary transition-colors hover:bg-primary/10 disabled:opacity-50"
             >
               🎯 {t.tryDemo}
             </button>
@@ -156,14 +173,15 @@ const ChatInterface = ({ t, onBack, onEmergency }: ChatInterfaceProps) => {
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && handleSend()}
             placeholder={t.chatPlaceholder}
-            className="flex-1 rounded-2xl border border-border bg-muted/50 px-5 py-3 text-base text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20 transition-all"
+            disabled={isTyping}
+            className="flex-1 rounded-2xl border border-border bg-muted/50 px-5 py-3 text-base text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20 transition-all disabled:opacity-50"
           />
           <button
             onClick={() => handleSend()}
-            disabled={!input.trim()}
+            disabled={!input.trim() || isTyping}
             className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-primary text-primary-foreground shadow-lg shadow-primary/20 transition-all hover:shadow-xl disabled:opacity-40 disabled:shadow-none"
           >
-            <Send className="h-5 w-5" />
+            {isTyping ? <Loader2 className="h-5 w-5 animate-spin" /> : <Send className="h-5 w-5" />}
           </button>
         </div>
       </div>
