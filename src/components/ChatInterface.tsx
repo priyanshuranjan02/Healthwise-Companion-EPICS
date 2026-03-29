@@ -56,13 +56,23 @@ const ChatInterface = ({ t, language, onBack, onEmergency }: ChatInterfaceProps)
     setStep(2);
 
     try {
-      const { data, error } = await supabase.functions.invoke("analyze-symptoms", {
-        body: { symptoms: msg, language },
-      });
+      // TODO: Replace this with your own model API call
+      // Example:
+      // const response = await fetch("https://your-model-endpoint.com/analyze", {
+      //   method: "POST",
+      //   headers: { "Content-Type": "application/json" },
+      //   body: JSON.stringify({ symptoms: msg, language }),
+      // });
+      // const diagnosis: Diagnosis = await response.json();
 
-      if (error) throw error;
-
-      const diagnosis: Diagnosis = data;
+      // Placeholder response until you integrate your model
+      const diagnosis: Diagnosis = {
+        disease: "Pending Integration",
+        confidence: 0,
+        severity: "low",
+        recommendations: ["Please integrate your own model to get real results."],
+        symptoms: [msg],
+      };
       setCurrentDiagnosis(diagnosis);
       setStep(3);
 
