@@ -59,13 +59,22 @@ const Index = () => {
             <span className="hidden sm:inline">Dashboard</span>
           </button>
           {user ? (
-            <button
-              onClick={handleLogout}
-              className="flex h-9 items-center gap-1.5 rounded-full border border-border bg-card px-3 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
-            >
-              <LogOut className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline">Logout</span>
-            </button>
+            <>
+              <button
+                onClick={() => navigate("/profile")}
+                className="flex h-9 items-center gap-1.5 rounded-full border border-border bg-card px-3 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+              >
+                <User className="h-3.5 w-3.5" />
+                <span className="hidden sm:inline">Profile</span>
+              </button>
+              <button
+                onClick={handleLogout}
+                className="flex h-9 items-center gap-1.5 rounded-full border border-border bg-card px-3 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+              >
+                <LogOut className="h-3.5 w-3.5" />
+                <span className="hidden sm:inline">Logout</span>
+              </button>
+            </>
           ) : (
             <button
               onClick={() => navigate("/auth")}

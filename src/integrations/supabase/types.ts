@@ -14,6 +14,45 @@ export type Database = {
   }
   public: {
     Tables: {
+      profiles: {
+        Row: {
+          avatar_url: string | null
+          contact_info: string | null
+          created_at: string
+          full_name: string | null
+          id: string
+          organization_name: string | null
+          phone: string | null
+          region: string | null
+          role: string | null
+          updated_at: string
+        }
+        Insert: {
+          avatar_url?: string | null
+          contact_info?: string | null
+          created_at?: string
+          full_name?: string | null
+          id: string
+          organization_name?: string | null
+          phone?: string | null
+          region?: string | null
+          role?: string | null
+          updated_at?: string
+        }
+        Update: {
+          avatar_url?: string | null
+          contact_info?: string | null
+          created_at?: string
+          full_name?: string | null
+          id?: string
+          organization_name?: string | null
+          phone?: string | null
+          region?: string | null
+          role?: string | null
+          updated_at?: string
+        }
+        Relationships: []
+      }
       symptom_checks: {
         Row: {
           confidence: number
