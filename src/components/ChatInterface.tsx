@@ -1,24 +1,13 @@
 import { useState, useRef, useEffect } from "react";
 import { Send, ArrowLeft, Loader2 } from "lucide-react";
-
 import { toast } from "sonner";
 import MessageBubble from "./MessageBubble";
-import ResultCard from "./ResultCard";
-
-interface Diagnosis {
-  disease: string;
-  confidence: number;
-  severity: "low" | "moderate" | "high";
-  recommendations: string[];
-  symptoms: string[];
-}
+import { supabase } from "@/integrations/supabase/client";
 
 interface Message {
   id: number;
   role: "user" | "ai";
   text: string;
-  isResult?: boolean;
-  diagnosis?: Diagnosis;
 }
 
 interface ChatInterfaceProps {
@@ -29,6 +18,34 @@ interface ChatInterfaceProps {
 }
 
 const quickSymptoms = ["fever", "headache", "cough"];
+const CHAT_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/analyze-symptoms`;
+
+function parseDiagnosis(text: string, userInput: string, language: string) {
+  const get = (label: string) =>
+    new RegExp(`\\*\\*${label}:\\*\\*\\s*([^\\n*]+)`, "i").exec(text)?.[1]?.trim();
+  const disease = get("Possible Condition") || "Assessment";
+  const severityRaw = (get("Severity") || "low").toLowerCase();
+  const severity = (["low", "moderate", "high"].includes(severityRaw) ? severityRaw : "low") as
+    | "low"
+    | "moderate"
+    | "high";
+  const confidence = parseInt(get("Confidence")?.replace("%", "") || "70", 10);
+
+  const recBlock = /\*\*Recommendations:\*\*([\s\S]*?)(\n\*\*|$)/i.exec(text)?.[1] || "";
+  const recommendations = recBlock
+    .split("\n")
+    .map((l) => l.replace(/^[-*]\s*/, "").trim())
+    .filter(Boolean);
+
+  return {
+    disease,
+    severity,
+    confidence: isNaN(confidence) ? 70 : confidence,
+    recommendations,
+    symptoms: [userInput],
+    language,
+  };
+}
 
 const ChatInterface = ({ t, language, onBack, onEmergency }: ChatInterfaceProps) => {
   const [messages, setMessages] = useState<Message[]>([
@@ -36,8 +53,6 @@ const ChatInterface = ({ t, language, onBack, onEmergency }: ChatInterfaceProps)
   ]);
   const [input, setInput] = useState("");
   const [isTyping, setIsTyping] = useState(false);
-  const [showResult, setShowResult] = useState(false);
-  const [currentDiagnosis, setCurrentDiagnosis] = useState<Diagnosis | null>(null);
   const [step, setStep] = useState(1);
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -45,54 +60,104 @@ const ChatInterface = ({ t, language, onBack, onEmergency }: ChatInterfaceProps)
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, isTyping]);
 
+  const saveToDb = async (userInput: string, aiText: string) => {
+    try {
+      const parsed = parseDiagnosis(aiText, userInput, language);
+      const { data: { user } } = await supabase.auth.getUser();
+      await supabase.from("symptom_checks").insert({
+        user_id: user?.id ?? null,
+        symptoms: parsed.symptoms,
+        diagnosis: parsed.disease,
+        confidence: parsed.confidence,
+        severity: parsed.severity,
+        recommendations: parsed.recommendations,
+        language: parsed.language,
+      });
+    } catch (err) {
+      console.error("Failed to save symptom check:", err);
+    }
+  };
+
   const handleSend = async (text?: string) => {
     const msg = text || input.trim();
     if (!msg || isTyping) return;
 
     const userMsg: Message = { id: Date.now(), role: "user", text: msg };
-    setMessages((prev) => [...prev, userMsg]);
+    const history = [...messages, userMsg];
+    setMessages(history);
     setInput("");
     setIsTyping(true);
     setStep(2);
 
+    const aiId = Date.now() + 1;
+    setMessages((prev) => [...prev, { id: aiId, role: "ai", text: "" }]);
+
     try {
-      // TODO: Replace this with your own model API call
-      // Example:
-      // const response = await fetch("https://your-model-endpoint.com/analyze", {
-      //   method: "POST",
-      //   headers: { "Content-Type": "application/json" },
-      //   body: JSON.stringify({ symptoms: msg, language }),
-      // });
-      // const diagnosis: Diagnosis = await response.json();
+      const resp = await fetch(CHAT_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+        },
+        body: JSON.stringify({
+          language,
+          messages: history.map((m) => ({
+            role: m.role === "ai" ? "assistant" : "user",
+            content: m.text,
+          })),
+        }),
+      });
 
-      // Placeholder response until you integrate your model
-      const diagnosis: Diagnosis = {
-        disease: "Pending Integration",
-        confidence: 0,
-        severity: "low",
-        recommendations: ["Please integrate your own model to get real results."],
-        symptoms: [msg],
-      };
-      setCurrentDiagnosis(diagnosis);
+      if (!resp.ok || !resp.body) {
+        if (resp.status === 429) toast.error("Rate limit exceeded. Try again shortly.");
+        else if (resp.status === 402) toast.error("AI credits exhausted. Add credits in Lovable workspace.");
+        else toast.error("Failed to analyze symptoms.");
+        setMessages((prev) => prev.filter((m) => m.id !== aiId));
+        setIsTyping(false);
+        setStep(1);
+        return;
+      }
+
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let acc = "";
+      let done = false;
+
+      while (!done) {
+        const { value, done: d } = await reader.read();
+        if (d) break;
+        buffer += decoder.decode(value, { stream: true });
+        let nl: number;
+        while ((nl = buffer.indexOf("\n")) !== -1) {
+          let line = buffer.slice(0, nl);
+          buffer = buffer.slice(nl + 1);
+          if (line.endsWith("\r")) line = line.slice(0, -1);
+          if (!line.startsWith("data: ")) continue;
+          const json = line.slice(6).trim();
+          if (json === "[DONE]") { done = true; break; }
+          try {
+            const parsed = JSON.parse(json);
+            const content = parsed.choices?.[0]?.delta?.content;
+            if (content) {
+              acc += content;
+              setMessages((prev) =>
+                prev.map((m) => (m.id === aiId ? { ...m, text: acc } : m))
+              );
+            }
+          } catch {
+            buffer = line + "\n" + buffer;
+            break;
+          }
+        }
+      }
+
       setStep(3);
-
-      const aiMsg: Message = {
-        id: Date.now() + 1,
-        role: "ai",
-        text: "Based on your symptoms, here is my assessment:",
-        isResult: true,
-        diagnosis,
-      };
-      setMessages((prev) => [...prev, aiMsg]);
-      setShowResult(true);
+      if (acc) await saveToDb(msg, acc);
     } catch (err: any) {
-      toast.error(err.message || "Failed to analyze symptoms. Please try again.");
-      const errorMsg: Message = {
-        id: Date.now() + 1,
-        role: "ai",
-        text: "I'm sorry, I encountered an error analyzing your symptoms. Please try again.",
-      };
-      setMessages((prev) => [...prev, errorMsg]);
+      console.error(err);
+      toast.error(err.message || "Failed to analyze symptoms.");
+      setMessages((prev) => prev.filter((m) => m.id !== aiId));
       setStep(1);
     } finally {
       setIsTyping(false);
@@ -101,7 +166,6 @@ const ChatInterface = ({ t, language, onBack, onEmergency }: ChatInterfaceProps)
 
   return (
     <div className="flex min-h-screen flex-col bg-background">
-      {/* Header */}
       <header className="sticky top-0 z-10 flex items-center justify-between border-b border-border bg-card/80 px-4 py-3 backdrop-blur-md">
         <button onClick={onBack} className="flex items-center gap-2 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors">
           <ArrowLeft className="h-4 w-4" />
@@ -127,18 +191,10 @@ const ChatInterface = ({ t, language, onBack, onEmergency }: ChatInterfaceProps)
         </button>
       </header>
 
-      {/* Messages */}
       <div className="flex-1 overflow-y-auto px-4 py-6">
         <div className="mx-auto max-w-2xl space-y-4">
           {messages.map((msg) => (
-            <div key={msg.id}>
-              <MessageBubble role={msg.role} text={msg.text} />
-              {msg.isResult && showResult && msg.diagnosis && (
-                <div className="mt-3">
-                  <ResultCard t={t} diagnosis={msg.diagnosis} />
-                </div>
-              )}
-            </div>
+            <MessageBubble key={msg.id} role={msg.role} text={msg.text || (isTyping && msg.role === "ai" ? "…" : "")} />
           ))}
           {isTyping && (
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -150,32 +206,28 @@ const ChatInterface = ({ t, language, onBack, onEmergency }: ChatInterfaceProps)
         </div>
       </div>
 
-      {/* Quick symptoms */}
-      {!showResult && (
-        <div className="border-t border-border bg-card/50 px-4 py-2">
-          <div className="mx-auto flex max-w-2xl gap-2 overflow-x-auto">
-            {quickSymptoms.map((sym) => (
-              <button
-                key={sym}
-                onClick={() => handleSend(t[sym])}
-                disabled={isTyping}
-                className="shrink-0 rounded-full border border-border bg-card px-4 py-2 text-sm font-medium text-foreground transition-colors hover:border-primary hover:text-primary disabled:opacity-50"
-              >
-                {t[sym]}
-              </button>
-            ))}
+      <div className="border-t border-border bg-card/50 px-4 py-2">
+        <div className="mx-auto flex max-w-2xl gap-2 overflow-x-auto">
+          {quickSymptoms.map((sym) => (
             <button
-              onClick={() => handleSend("I have fever, fatigue, and body ache for 2 days")}
+              key={sym}
+              onClick={() => handleSend(t[sym])}
               disabled={isTyping}
-              className="shrink-0 rounded-full border border-primary/30 bg-primary/5 px-4 py-2 text-sm font-semibold text-primary transition-colors hover:bg-primary/10 disabled:opacity-50"
+              className="shrink-0 rounded-full border border-border bg-card px-4 py-2 text-sm font-medium text-foreground transition-colors hover:border-primary hover:text-primary disabled:opacity-50"
             >
-              🎯 {t.tryDemo}
+              {t[sym]}
             </button>
-          </div>
+          ))}
+          <button
+            onClick={() => handleSend("I have fever, fatigue, and body ache for 2 days")}
+            disabled={isTyping}
+            className="shrink-0 rounded-full border border-primary/30 bg-primary/5 px-4 py-2 text-sm font-semibold text-primary transition-colors hover:bg-primary/10 disabled:opacity-50"
+          >
+            🎯 {t.tryDemo}
+          </button>
         </div>
-      )}
+      </div>
 
-      {/* Input */}
       <div className="border-t border-border bg-card px-4 py-4">
         <div className="mx-auto flex max-w-2xl gap-3">
           <input
